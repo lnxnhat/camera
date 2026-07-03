@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dahua Camera Control Panel</title>
+
+<!-- Thư viện đọc mã QR -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.js"></script>
+<!-- Thư viện đăng nhập Google (dùng để upload lên Drive) -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0d0d0d;
+    color: #eaeaea;
+    margin: 0;
+    padding: 20px;
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 16px; }
+  h2 { font-size: 1rem; color: #9fd3ff; margin: 24px 0 10px; }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: #171717;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 14px;
+  }
+  canvas {
+    width: 100%;
+    max-width: 100%;
+    background: #000;
+    border-radius: 8px;
+    border: 1px solid #333;
+  }
+  label { display: block; font-size: 0.8rem; color: #aaa; margin: 8px 0 4px; }
+  input, textarea {
+    width: 100%;
+    background: #0d0d0d;
+    border: 1px solid #333;
+    color: #eee;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 0.85rem;
+    font-family: inherit;
+  }
+  textarea { font-family: "Courier New", monospace; min-height: 160px; resize: vertical; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button {
+    padding: 10px 14px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    background: #2a2a2a;
+    color: #eee;
+  }
+  button.primary { background: #2563eb; }
+  button.danger { background: #dc2626; }
+  button:hover { filter: brightness(1.15); }
+  #log {
+    background: #000;
+    border-radius: 8px;
+    padding: 10px;
+    height: 160px;
+    overflow-y: auto;
+    font-family: "Courier New", monospace;
+    font-size: 0.78rem;
+    white-space: pre-wrap;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    background: #333;
+    margin-left: 6px;
+  }
+  .badge.on { background: #16a34a; }
+  .badge.rec { background: #dc2626; }
+</style>
+</head>
+<body>
+
+<h1>📹 Dahua Camera Control Panel <span style="font-size:0.7rem;color:#888;">(100% client-side JS, 1 file)</span></h1>
+
+<div class="grid">
+
+  <!-- ================= CẤU HÌNH ================= -->
+  <div class="panel">
+    <h2>⚙️ Cấu hình Camera 1</h2>
+    <label>Tên định danh (dùng trong lệnh, VD: "cam1")</label>
+    <input id="cam1_name" value="cam1">
+    <label>IP camera</label>
+    <input id="cam1_ip" placeholder="192.168.1.100">
+    <label>Tài khoản</label>
+    <input id="cam1_user" value="admin">
+    <label>Mật khẩu</label>
+    <input id="cam1_pass" type="password">
+    <label>Channel / Subtype</label>
+    <div style="display:flex; gap:8px;">
+      <input id="cam1_channel" value="1" style="width:50%;">
+      <input id="cam1_subtype" value="0" style="width:50%;">
+    </div>
+
+    <h2>⚙️ Cấu hình Camera 2</h2>
+    <label>Tên định danh (VD: "cam2")</label>
+    <input id="cam2_name" value="cam2">
+    <label>IP camera</label>
+    <input id="cam2_ip" placeholder="192.168.1.101">
+    <label>Tài khoản</label>
+    <input id="cam2_user" value="admin">
+    <label>Mật khẩu</label>
+    <input id="cam2_pass" type="password">
+    <label>Channel / Subtype</label>
+    <div style="display:flex; gap:8px;">
+      <input id="cam2_channel" value="1" style="width:50%;">
+      <input id="cam2_subtype" value="0" style="width:50%;">
+    </div>
+
+    <h2>☁️ Google Drive</h2>
+    <label>OAuth Client ID (tạo tại Google Cloud Console, loại "Web application")</label>
+    <input id="drive_client_id" placeholder="xxxx.apps.googleusercontent.com">
+    <label>ID thư mục Drive để lưu video</label>
+    <input id="drive_folder_id" placeholder="dán ID thư mục Drive tại đây">
+    <div class="btnrow">
+      <button class="primary" onclick="CamSystem.driveLogin()">Đăng nhập Google</button>
+      <span id="drive_status" class="badge">Chưa đăng nhập</span>
+    </div>
+  </div>
+
+  <!-- ================= XEM CAMERA ================= -->
+  <div class="panel">
+    <h2>🖥️ Xem trực tiếp</h2>
+    <label>Camera 1 <span id="cam1_badge" class="badge">tắt</span></label>
+    <canvas id="cam1_canvas" width="640" height="360"></canvas>
+    <label style="margin-top:14px;">Camera 2 <span id="cam2_badge" class="badge">tắt</span></label>
+    <canvas id="cam2_canvas" width="640" height="360"></canvas>
+
+    <h2>🔳 Mã QR nhận được gần nhất</h2>
+    <div id="qr_result" style="font-family:monospace; font-size:0.85rem; background:#000; padding:8px; border-radius:6px;">chưa có</div>
+  </div>
+</div>
+
+<!-- ================= ĐIỀU KHIỂN NHANH ================= -->
+<div class="panel" style="margin-top:16px;">
+  <h2>🎛️ Điều khiển nhanh</h2>
+  <div class="btnrow">
+    <button class="primary" onclick="recam('cam1')">recam('cam1')</button>
+    <button onclick="unrecam('cam1')">unrecam('cam1')</button>
+    <button class="danger" onclick="startcamera('cam1')">startcamera('cam1')</button>
+    <button onclick="stopcamera('cam1')">stopcamera('cam1')</button>
+  </div>
+  <div class="btnrow">
+    <button class="primary" onclick="recam('cam2')">recam('cam2')</button>
+    <button onclick="unrecam('cam2')">unrecam('cam2')</button>
+    <button class="danger" onclick="startcamera('cam2')">startcamera('cam2')</button>
+    <button onclick="stopcamera('cam2')">stopcamera('cam2')</button>
+  </div>
+  <div class="btnrow">
+    <button onclick="camspeak('Xin chào, camera đang hoạt động')">camspeak('...')</button>
+  </div>
+</div>
+
+<!-- ================= VÙNG TÙY CHỈNH LOGIC ================= -->
+<div class="panel" style="margin-top:16px;">
+  <h2>🧩 Vùng tùy chỉnh logic (viết JS trực tiếp, dùng được recam/startcamera/stopcamera/unrecam/camspeak)</h2>
+  <textarea id="custom_code">// Ví dụ: khi phát hiện QR ở cam1 thì tự đọc to nội dung
+CamSystem.onQR('cam1', (text) => {
+  camspeak('Đã đọc được mã: ' + text);
+});
+
+// Ví dụ: tự động ghi hình 10 giây rồi dừng
+// recam('cam1');
+// startcamera('cam1');
+// setTimeout(() => stopcamera('cam1'), 10000);
+</textarea>
+  <div class="btnrow">
+    <button class="primary" onclick="runCustomCode()">▶ Chạy code</button>
+  </div>
+</div>
+
+<!-- ================= LOG ================= -->
+<div class="panel" style="margin-top:16px;">
+  <h2>📜 Log hệ thống</h2>
+  <div id="log"></div>
+</div>
+
+<script>
+/* =========================================================================
+   Dahua Camera Control Library — thuần JavaScript, chạy trong trình duyệt
+   Các hàm theo yêu cầu:
+     recam(idOrName)        -> bắt đầu đọc dữ liệu camera liên tục (xem trực tiếp + quét QR)
+     startcamera(idOrName)  -> bắt đầu ghi hình
+     stopcamera(idOrName)   -> dừng ghi hình, upload video lên Google Drive
+     unrecam(idOrName)      -> dừng đọc camera
+     camspeak(text)         -> đọc to nội dung bằng giọng nói (text-to-speech)
+
+   GIỚI HẠN CẦN BIẾT:
+   - Camera Dahua thường không gửi header CORS -> fetch() ảnh từ camera
+     có thể bị trình duyệt chặn (lỗi "CORS policy" trong Console).
+     Nếu gặp lỗi này, cần: (1) bật CORS trên camera nếu firmware hỗ trợ,
+     hoặc (2) dùng một proxy trung gian thêm header CORS (không bắt buộc
+     phải là Python — có thể dùng bất kỳ proxy nào, kể cả extension trình
+     duyệt dev, hoặc dịch vụ tự host thêm header CORS).
+   - Vì yêu cầu không dùng Python, code này gọi thẳng tới camera. Nếu môi
+     trường của bạn chặn CORS, hãy mở Console (F12) để xem log lỗi cụ thể.
+========================================================================= */
+
+const CamSystem = (() => {
+  const cams = {};          // id -> { pollTimer, recorder, chunks, recording, qrCallbacks, timerInterval, startTime }
+  const logEl = document.getElementById('log');
+
+  function log(msg) {
+    const time = new Date().toLocaleTimeString();
+    logEl.textContent += `[${time}] ${msg}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+    console.log(msg);
+  }
+
+  function getConfig(idOrName) {
+    // Cho phép gọi bằng số thứ tự (1, 2) hoặc tên đã đặt (cam1, cam2, hoặc tên tùy chỉnh)
+    const key = String(idOrName);
+    const slot = (key === '1' || key === document.getElementById('cam1_name').value) ? 1
+               : (key === '2' || key === document.getElementById('cam2_name').value) ? 2
+               : null;
+    if (!slot) { log(`❌ Không tìm thấy camera "${idOrName}"`); return null; }
+
+    return {
+      slot,
+      id: document.getElementById(`cam${slot}_name`).value || `cam${slot}`,
+      ip: document.getElementById(`cam${slot}_ip`).value,
+      user: document.getElementById(`cam${slot}_user`).value,
+      pass: document.getElementById(`cam${slot}_pass`).value,
+      channel: document.getElementById(`cam${slot}_channel`).value,
+      subtype: document.getElementById(`cam${slot}_subtype`).value,
+      canvas: document.getElementById(`cam${slot}_canvas`),
+      badge: document.getElementById(`cam${slot}_badge`),
+    };
+  }
+
+  function ensureState(id) {
+    if (!cams[id]) {
+      cams[id] = { pollTimer: null, recorder: null, chunks: [], recording: false, qrCallbacks: [] };
+    }
+    return cams[id];
+  }
+
+  // ---------------- recam(): đọc dữ liệu camera liên tục ----------------
+  function recam(idOrName) {
+    const cfg = getConfig(idOrName);
+    if (!cfg) return;
+    const state = ensureState(cfg.id);
+
+    if (state.pollTimer) { log(`ℹ️ ${cfg.id} đã đang chạy.`); return; }
+
+    const ctx = cfg.canvas.getContext('2d');
+    const snapshotUrl = `http://${cfg.ip}/cgi-bin/snapshot.cgi?channel=${cfg.channel}`;
+    const authHeader = 'Basic ' + btoa(`${cfg.user}:${cfg.pass}`);
+
+    async function pollOnce() {
+      try {
+        const res = await fetch(snapshotUrl, { headers: { Authorization: authHeader }, cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const bitmap = await createImageBitmap(blob);
+
+        cfg.canvas.width = bitmap.width;
+        cfg.canvas.height = bitmap.height;
+        ctx.drawImage(bitmap, 0, 0);
+
+        // Quét QR trên khung hình vừa vẽ
+        const imgData = ctx.getImageData(0, 0, cfg.canvas.width, cfg.canvas.height);
+        const qr = jsQR(imgData.data, imgData.width, imgData.height);
+        if (qr && qr.data) {
+          document.getElementById('qr_result').textContent = `[${cfg.id}] ${qr.data}`;
+          state.qrCallbacks.forEach(cb => cb(qr.data));
+        }
+      } catch (err) {
+        log(`⚠️ [${cfg.id}] Lỗi đọc camera: ${err.message} (kiểm tra CORS/IP/mật khẩu)`);
+      }
+    }
+
+    state.pollTimer = setInterval(pollOnce, 300); // ~3 khung hình/giây
+    pollOnce();
+    cfg.badge.textContent = 'đang xem';
+    cfg.badge.classList.add('on');
+    log(`▶️ recam('${cfg.id}') — bắt đầu đọc camera liên tục.`);
+  }
+
+  // ---------------- unrecam(): dừng đọc camera ----------------
+  function unrecam(idOrName) {
+    const cfg = getConfig(idOrName);
+    if (!cfg) return;
+    const state = ensureState(cfg.id);
+    if (state.pollTimer) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+      cfg.badge.textContent = 'tắt';
+      cfg.badge.classList.remove('on');
+      log(`⏹️ unrecam('${cfg.id}') — đã dừng đọc camera.`);
+    } else {
+      log(`ℹ️ ${cfg.id} chưa chạy, không cần dừng.`);
+    }
+  }
+
+  // ---------------- startcamera(): bắt đầu ghi hình ----------------
+  function startcamera(idOrName) {
+    const cfg = getConfig(idOrName);
+    if (!cfg) return;
+    const state = ensureState(cfg.id);
+
+    if (!state.pollTimer) {
+      log(`⚠️ Cần gọi recam('${cfg.id}') trước khi ghi hình.`);
+      return;
+    }
+    if (state.recording) { log(`ℹ️ ${cfg.id} đang ghi hình rồi.`); return; }
+
+    const stream = cfg.canvas.captureStream(25);
+    state.chunks = [];
+    state.recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+    state.recorder.ondataavailable = (e) => { if (e.data.size > 0) state.chunks.push(e.data); };
+    state.recorder.start();
+    state.recording = true;
+    state.startTime = Date.now();
+    cfg.badge.textContent = 'REC 00:00';
+    cfg.badge.classList.add('rec');
+
+    state.timerInterval = setInterval(() => {
+      const sec = Math.floor((Date.now() - state.startTime) / 1000);
+      const m = String(Math.floor(sec / 60)).padStart(2, '0');
+      const s = String(sec % 60).padStart(2, '0');
+      cfg.badge.textContent = `REC ${m}:${s}`;
+    }, 1000);
+
+    log(`⏺️ startcamera('${cfg.id}') — bắt đầu ghi hình.`);
+  }
+
+  // ---------------- stopcamera(): dừng ghi hình + upload Drive ----------------
+  function stopcamera(idOrName) {
+    const cfg = getConfig(idOrName);
+    if (!cfg) return;
+    const state = ensureState(cfg.id);
+
+    if (!state.recording || !state.recorder) { log(`ℹ️ ${cfg.id} không ở trạng thái ghi hình.`); return; }
+
+    clearInterval(state.timerInterval);
+    cfg.badge.classList.remove('rec');
+    cfg.badge.textContent = 'đang xem';
+
+    state.recorder.onstop = async () => {
+      const blob = new Blob(state.chunks, { type: 'video/webm' });
+      const filename = `${cfg.id}_${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
+      log(`⏹️ stopcamera('${cfg.id}') — đã dừng ghi hình (${(blob.size / 1024 / 1024).toFixed(2)} MB). Đang tải lên Drive...`);
+      await uploadToDrive(blob, filename);
+    };
+    state.recorder.stop();
+    state.recording = false;
+  }
+
+  // ---------------- camspeak(): đọc to bằng giọng nói ----------------
+  function camspeak(text) {
+    if (!('speechSynthesis' in window)) { log('❌ Trình duyệt không hỗ trợ giọng nói.'); return; }
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'vi-VN';
+    speechSynthesis.speak(utter);
+    log(`🔊 camspeak: "${text}"`);
+  }
+
+  // ---------------- Đăng ký callback khi có QR ----------------
+  function onQR(idOrName, callback) {
+    const cfg = getConfig(idOrName);
+    if (!cfg) return;
+    const state = ensureState(cfg.id);
+    state.qrCallbacks.push(callback);
+    log(`✅ Đã đăng ký callback QR cho ${cfg.id}`);
+  }
+
+  // ---------------- Google Drive: đăng nhập + upload ----------------
+  let driveAccessToken = null;
+
+  function driveLogin() {
+    const clientId = document.getElementById('drive_client_id').value.trim();
+    if (!clientId) { log('❌ Chưa nhập OAuth Client ID.'); return; }
+    if (!window.google || !google.accounts) { log('⏳ Thư viện Google chưa load xong, thử lại sau vài giây.'); return; }
+
+    const tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: (resp) => {
+        if (resp.access_token) {
+          driveAccessToken = resp.access_token;
+          document.getElementById('drive_status').textContent = 'Đã đăng nhập';
+          document.getElementById('drive_status').classList.add('on');
+          log('✅ Đăng nhập Google Drive thành công.');
+        }
+      },
+    });
+    tokenClient.requestAccessToken();
+  }
+
+  async function uploadToDrive(blob, filename) {
+    if (!driveAccessToken) { log('❌ Chưa đăng nhập Google Drive. Bấm "Đăng nhập Google" trước.'); return; }
+    const folderId = document.getElementById('drive_folder_id').value.trim();
+
+    const metadata = { name: filename, parents: folderId ? [folderId] : undefined };
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+    form.append('file', blob);
+
+    try {
+      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${driveAccessToken}` },
+        body: form,
+      });
+      const data = await res.json();
+      if (data.id) {
+        log(`☁️ Đã upload thành công lên Drive: ${filename} (id: ${data.id})`);
+      } else {
+        log(`⚠️ Upload Drive trả về lỗi: ${JSON.stringify(data)}`);
+      }
+    } catch (err) {
+      log(`❌ Lỗi upload Drive: ${err.message}`);
+    }
+  }
+
+  return { recam, unrecam, startcamera, stopcamera, camspeak, onQR, driveLogin, log };
+})();
+
+// Expose ra global để dùng trực tiếp: recam('cam1'), startcamera(1), v.v.
+window.recam = CamSystem.recam;
+window.unrecam = CamSystem.unrecam;
+window.startcamera = CamSystem.startcamera;
+window.stopcamera = CamSystem.stopcamera;
+window.camspeak = CamSystem.camspeak;
+
+// ---------------- Chạy code trong vùng tùy chỉnh ----------------
+function runCustomCode() {
+  const code = document.getElementById('custom_code').value;
+  try {
+    new Function(code)();
+    CamSystem.log('✅ Đã chạy code tùy chỉnh.');
+  } catch (err) {
+    CamSystem.log(`❌ Lỗi trong code tùy chỉnh: ${err.message}`);
+  }
+}
+</script>
+</body>
+</html>
