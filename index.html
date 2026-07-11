@@ -489,14 +489,48 @@ function initDesktop(){
   // Biến nội bộ dùng để "cộng dồn" gia tốc — không hiển thị số liệu ra UI,
   // chỉ dùng để dịch chuyển khối vuông trong cảnh 3D một cách ngầm định.
   const simulatedPosition = { x: 0, y: 0, z: 0 };
-  let targetRotation = { x: 0, y: 0, z: 0 };
+
+  // ---- 2.4b Xoay khối bằng Quaternion (thay cho Euler trực tiếp) ----
+  // Dùng Quaternion + SLERP để tránh hiện tượng "xoay loạn xạ" / gimbal lock
+  // khi điện thoại xoay nhanh qua nhiều trục cùng lúc.
+  const euler = new THREE.Euler(0, 0, 0, 'YXZ'); // 'YXZ' khớp với cách cảm biến thiết bị (Z-up) trả về alpha/beta/gamma
+  const targetQuaternion = new THREE.Quaternion();
+
+  // Bộ lọc low-pass (EMA) trên góc nghiêng để triệt tiêu rung/nhiễu nhỏ
+  // từ cảm biến trước khi dựng Quaternion mục tiêu.
+  let filteredAlpha = 0, filteredBeta = 0, filteredGamma = 0;
+  let hasFirstSample = false;
+  const ANGLE_SMOOTHING = 0.35; // 0..1 — càng nhỏ càng mượt nhưng trễ hơn
+
+  // Nội suy góc có xử lý "wrap-around" (đường đi ngắn nhất quanh vòng tròn 0–360°)
+  // — dùng cho alpha vì la bàn có thể nhảy từ 359° sang 0°.
+  function lerpAngleDeg(current, target, t){
+    const diff = ((target - current + 540) % 360) - 180;
+    return current + diff * t;
+  }
 
   function applySensorDataToCube(payload){
     // Xoay khối theo alpha/beta/gamma (độ nghiêng thiết bị)
     if (payload.alpha !== undefined && payload.beta !== undefined && payload.gamma !== undefined){
-      targetRotation.y = THREE.MathUtils.degToRad(payload.alpha);
-      targetRotation.x = THREE.MathUtils.degToRad(payload.beta);
-      targetRotation.z = THREE.MathUtils.degToRad(payload.gamma);
+      if (!hasFirstSample){
+        filteredAlpha = payload.alpha;
+        filteredBeta  = payload.beta;
+        filteredGamma = payload.gamma;
+        hasFirstSample = true;
+      } else {
+        filteredAlpha = lerpAngleDeg(filteredAlpha, payload.alpha, ANGLE_SMOOTHING);
+        filteredBeta  += (payload.beta  - filteredBeta)  * ANGLE_SMOOTHING;
+        filteredGamma += (payload.gamma - filteredGamma) * ANGLE_SMOOTHING;
+      }
+
+      // Euler với thứ tự trục 'YXZ': Y=alpha (heading), X=beta (nghiêng trước/sau), Z=gamma (nghiêng trái/phải)
+      euler.set(
+        THREE.MathUtils.degToRad(filteredBeta),
+        THREE.MathUtils.degToRad(filteredAlpha),
+        THREE.MathUtils.degToRad(filteredGamma),
+        'YXZ'
+      );
+      targetQuaternion.setFromEuler(euler);
     }
 
     // Cộng dồn gia tốc trục Y vào tọa độ mô phỏng của khối vuông
@@ -512,10 +546,9 @@ function initDesktop(){
   function animate(){
     requestAnimationFrame(animate);
 
-    // Nội suy mượt tới góc xoay mục tiêu (giảm giật khi dữ liệu tới rời rạc)
-    cube.rotation.x += (targetRotation.x - cube.rotation.x) * 0.15;
-    cube.rotation.y += (targetRotation.y - cube.rotation.y) * 0.15;
-    cube.rotation.z += (targetRotation.z - cube.rotation.z) * 0.15;
+    // SLERP: nội suy góc quay mượt mà trên mặt cầu đơn vị (không gimbal lock,
+    // không "xoay loạn xạ" khi dữ liệu đến dồn dập hoặc góc thay đổi lớn)
+    cube.quaternion.slerp(targetQuaternion, 0.2);
 
     // Áp dụng vị trí mô phỏng (chỉ trục Y theo yêu cầu), có suy giảm nhẹ về 0
     cube.position.y += (simulatedPosition.y - cube.position.y) * 0.12;
@@ -557,8 +590,6 @@ function initMobile(){
   }
 
   let conn = null;
-  let lastAccelY = 0;
-  let lastYVelocitySign = 0; // để phát hiện chuyển động lên/xuống theo trục Y
 
   btn.addEventListener('click', async () => {
     if (!hostId) return;
@@ -627,19 +658,45 @@ function initMobile(){
     return true;
   }
 
+  // Nội suy góc có xử lý "wrap-around" (đường đi ngắn nhất quanh vòng tròn 0–360°),
+  // dùng cho alpha vì la bàn có thể nhảy từ 359° sang 0°.
+  function lerpAngleDeg(current, target, t){
+    const diff = ((target - current + 540) % 360) - 180;
+    return current + diff * t;
+  }
+
   // ---- 3.4 Lắng nghe cảm biến & gửi dữ liệu qua PeerJS ----
   function startSensors(){
-    let latestAlpha = 0, latestBeta = 0, latestGamma = 0;
+    // Giá trị thô mới nhất từ sự kiện cảm biến
+    let rawAlpha = 0, rawBeta = 0, rawGamma = 0;
     let latestAccelY = 0;
 
-    window.addEventListener('deviceorientation', (e) => {
-      latestAlpha = e.alpha || 0;
-      latestBeta  = e.beta  || 0;
-      latestGamma = e.gamma || 0;
+    // Giá trị đã qua bộ lọc low-pass (EMA) — đây là dữ liệu thực sự được gửi đi,
+    // giúp triệt tiêu rung/nhiễu nhỏ của cảm biến ngay tại nguồn, trước khi
+    // truyền qua PeerJS, thay vì chỉ lọc ở phía nhận.
+    let smoothedAlpha = 0, smoothedBeta = 0, smoothedGamma = 0;
+    let hasFirstSample = false;
+    const SEND_SMOOTHING = 0.5; // lọc nhẹ ở nguồn — lọc chính vẫn nằm ở phía desktop
 
-      mAlpha.textContent = latestAlpha.toFixed(1);
-      mBeta.textContent  = latestBeta.toFixed(1);
-      mGamma.textContent = latestGamma.toFixed(1);
+    window.addEventListener('deviceorientation', (e) => {
+      rawAlpha = e.alpha || 0;
+      rawBeta  = e.beta  || 0;
+      rawGamma = e.gamma || 0;
+
+      if (!hasFirstSample){
+        smoothedAlpha = rawAlpha;
+        smoothedBeta  = rawBeta;
+        smoothedGamma = rawGamma;
+        hasFirstSample = true;
+      } else {
+        smoothedAlpha = lerpAngleDeg(smoothedAlpha, rawAlpha, SEND_SMOOTHING);
+        smoothedBeta  += (rawBeta  - smoothedBeta)  * SEND_SMOOTHING;
+        smoothedGamma += (rawGamma - smoothedGamma) * SEND_SMOOTHING;
+      }
+
+      mAlpha.textContent = smoothedAlpha.toFixed(1);
+      mBeta.textContent  = smoothedBeta.toFixed(1);
+      mGamma.textContent = smoothedGamma.toFixed(1);
     });
 
     window.addEventListener('devicemotion', (e) => {
@@ -650,17 +707,18 @@ function initMobile(){
       latestAccelY = acc || 0;
     });
 
-    // Gửi dữ liệu định kỳ (throttle ~50ms) để tránh nghẽn kênh dữ liệu P2P
+    // Gửi dữ liệu đã làm mượt theo nhịp cố định và ổn định (~33ms ≈ 30 lần/giây).
+    // Tốc độ này đủ cao để chuyển động mượt nhưng không làm nghẽn kênh dữ liệu P2P.
     setInterval(() => {
       if (conn && conn.open){
         conn.send({
-          alpha: latestAlpha,
-          beta: latestBeta,
-          gamma: latestGamma,
+          alpha: smoothedAlpha,
+          beta: smoothedBeta,
+          gamma: smoothedGamma,
           accelY: latestAccelY
         });
       }
-    }, 50);
+    }, 33);
   }
 }
 </script>
